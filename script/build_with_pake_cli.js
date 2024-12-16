@@ -1,96 +1,160 @@
 import shelljs from 'shelljs';
 import axios from 'axios';
 import fs from 'fs';
+import path from 'path';
 
 const { exec, cd, mv } = shelljs;
 
-console.log('Welcome to use pake-cli to build app');
-console.log('Node.js info in your localhost ', process.version);
-console.log('\n=======================\n');
-console.log('Pake parameters is: ');
-console.log('url: ', process.env.URL);
-console.log('name: ', process.env.NAME);
-console.log('icon: ', process.env.ICON);
-console.log('height: ', process.env.HEIGHT);
-console.log('width: ', process.env.WIDTH);
-console.log('hide-title-bar: ', process.env.HIDE_TITLE_BAR);
-console.log('resize: ', process.env.RESIZE);
-console.log('is multi arch? only for Mac: ', process.env.MULTI_ARCH);
-console.log('targets type? only for Linux: ', process.env.TARGETS);
-console.log('safe-domain: ', process.env.SAFE_DOMAIN);
-console.log('===========================\n');
+// Helper function for logging
+const log = (...args) => console.log(...args);
+const logError = (...args) => console.error('\x1b[31m', ...args, '\x1b[0m');
+const logSuccess = (...args) => console.log('\x1b[32m', ...args, '\x1b[0m');
+const logInfo = (...args) => console.log('\x1b[36m', ...args, '\x1b[0m');
 
-cd('node_modules/pake-cli');
-let params = `node cli.js ${process.env.URL} --name ${process.env.NAME} --height ${process.env.HEIGHT} --width ${process.env.WIDTH}`;
+// Print welcome message and environment info
+log('\n=== Pake CLI Build Process ===');
+logInfo('Node.js version:', process.version);
+log('Current platform:', process.platform);
+log('\nBuild Parameters:');
+[
+  ['URL', process.env.URL],
+  ['Name', process.env.NAME],
+  ['Icon', process.env.ICON],
+  ['Height', process.env.HEIGHT],
+  ['Width', process.env.WIDTH],
+  ['Hide Title Bar', process.env.HIDE_TITLE_BAR],
+  ['Resize', process.env.RESIZE],
+  ['Multi Arch (Mac only)', process.env.MULTI_ARCH],
+  ['Targets (Linux only)', process.env.TARGETS],
+  ['Safe Domain', process.env.SAFE_DOMAIN]
+].forEach(([key, value]) => log(`${key}: ${value || 'not set'}`));
+log('\n===========================\n');
 
-if (process.env.HIDE_TITLE_BAR === 'true') {
-  params = `${params} --hide-title-bar`;
+// Validate required parameters
+if (!process.env.URL || !process.env.NAME) {
+  logError('Error: URL and NAME are required parameters');
+  process.exit(1);
 }
 
-if (process.env.FULLSCREEN === 'true') {
-  params = `${params} --resize`;
+// Ensure we're in the correct directory
+const pakePath = 'node_modules/pake-cli';
+if (!fs.existsSync(pakePath)) {
+  logError(`Error: ${pakePath} directory not found`);
+  process.exit(1);
+}
+cd(pakePath);
+
+// Construct base parameters
+let params = [
+  'node cli.js',
+  process.env.URL,
+  '--name', process.env.NAME,
+  '--height', process.env.HEIGHT || '780',
+  '--width', process.env.WIDTH || '1200'
+].join(' ');
+
+// Add optional parameters
+const addParam = (condition, param) => {
+  if (condition) params += ` ${param}`;
+};
+
+addParam(process.env.HIDE_TITLE_BAR === 'true', '--hide-title-bar');
+addParam(process.env.FULLSCREEN === 'true', '--resize');
+addParam(process.env.SAFE_DOMAIN, `--safe-domain ${process.env.SAFE_DOMAIN}`);
+addParam(process.env.TARGETS, `--targets ${process.env.TARGETS}`);
+addParam(process.platform === 'win32' || process.platform === 'linux', '--show-system-tray');
+
+// Handle multi-arch for macOS
+if (process.env.MULTI_ARCH === 'true' && process.platform === 'darwin') {
+  const result = exec('rustup target add aarch64-apple-darwin');
+  if (result.code !== 0) {
+    logError('Failed to add aarch64-apple-darwin target');
+    process.exit(1);
+  }
+  params += ' --multi-arch';
 }
 
-if (process.env.MULTI_ARCH === 'true') {
-  exec('rustup target add aarch64-apple-darwin');
-  params = `${params} --multi-arch`;
-}
-
-if (process.env.TARGETS) {
-  params = `${params} --targets ${process.env.TARGETS}`;
-}
-
-if (process.env.SAFE_DOMAIN) {
-  params = `${params} --safe-domain ${process.env.SAFE_DOMAIN}`;
-}
-
-if (process.platform === 'win32' || process.platform === 'linux') {
-  params = `${params} --show-system-tray`;
-}
-
-const downloadIcon = async iconFile => {
+// Function to download and save icon
+const downloadIcon = async (iconFile) => {
   try {
-    const response = await axios.get(process.env.ICON, { responseType: 'arraybuffer' });
+    const response = await axios.get(process.env.ICON, { 
+      responseType: 'arraybuffer',
+      timeout: 10000 // 10 second timeout
+    });
     fs.writeFileSync(iconFile, response.data);
     return `${params} --icon ${iconFile}`;
   } catch (error) {
-    console.error('Error occurred during icon download: ', error);
+    logError('Error downloading icon:', error.message);
+    return params; // Continue without icon if download fails
   }
 };
 
+// Main build process
 const main = async () => {
-  if (process.env.ICON && process.env.ICON !== '') {
-    let iconFile;
-    switch (process.platform) {
-      case 'linux':
-        iconFile = 'icon.png';
-        break;
-      case 'darwin':
-        iconFile = 'icon.icns';
-        break;
-      case 'win32':
-        iconFile = 'icon.ico';
-        break;
-      default:
-        console.log("Unable to detect your OS system, won't download the icon!");
-        process.exit(1);
+  try {
+    // Handle icon download if specified
+    if (process.env.ICON) {
+      const iconExtensions = {
+        linux: 'png',
+        darwin: 'icns',
+        win32: 'ico'
+      };
+      
+      const iconExt = iconExtensions[process.platform];
+      if (iconExt) {
+        const iconFile = `icon.${iconExt}`;
+        params = await downloadIcon(iconFile);
+      } else {
+        logError('Unsupported platform for icon download');
+      }
     }
 
-    params = await downloadIcon(iconFile);
-  } else {
-    console.log("Won't download the icon as ICON environment variable is not defined!");
-  }
+    // Create output directory if it doesn't exist
+    ['output', '../output', '../../output', 'dist', 'out'].forEach(dir => {
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+    });
 
-  console.log('Pake parameters is: ', params);
-  console.log('Compile....');
-  exec(params);
+    // Log final parameters and start build
+    logInfo('\nFinal build parameters:', params);
+    logInfo('\nStarting build process...');
+    
+    const buildResult = exec(params);
+    if (buildResult.code !== 0) {
+      throw new Error(`Build failed with code ${buildResult.code}`);
+    }
 
-  if (!fs.existsSync('output')) {
-    fs.mkdirSync('output');
+    // Move built files to output directory
+    const moveFiles = exec(`mv ${process.env.NAME}.* output/`);
+    if (moveFiles.code !== 0) {
+      throw new Error('Failed to move built files to output directory');
+    }
+
+    // Additional file copy for different possible output locations
+    ['dist/*', 'out/*'].forEach(dir => {
+      if (fs.existsSync(dir.split('/')[0])) {
+        exec(`cp -r ${dir} output/ || true`);
+      }
+    });
+
+    logSuccess('\nBuild completed successfully!');
+    
+    // Return to original directory
+    cd('../..');
+    
+    // List output files
+    logInfo('\nGenerated files:');
+    exec('ls -la output/');
+
+  } catch (error) {
+    logError('\nBuild failed:', error.message);
+    process.exit(1);
   }
-  mv(`${process.env.NAME}.*`, 'output/');
-  console.log('Build Success');
-  cd('../..');
 };
 
-main();
+// Run the build process
+main().catch(error => {
+  logError('Unexpected error:', error);
+  process.exit(1);
+});
